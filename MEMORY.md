@@ -129,13 +129,15 @@ vcluster 与 host cluster 之间的 Pod、Node 等资源通过 syncer 同步。
 
 1. 先到 D 集群开发机操作。
 2. 优先使用 `rayctl`。
-3. 如果 `rayctl` 信息不足、能力不满足或排障需要，再使用 `kubectl`。
-4. 读操作可以直接执行。
-5. 写操作必须先输出计划并等待用户明确确认。
+3. 生成任何 Kubernetes / vcluster / Node / Job / PVC / AFS / ECS 操作命令前，先参考 `TOOLS.md` 的 “rayctl 使用索引”和对应 rayctl 小节。
+4. 如果 `rayctl` 信息不足、能力不满足或排障需要，再使用 `kubectl`。
+5. 读操作可以直接执行。
+6. 写操作必须先输出计划并等待用户明确确认。
 
 特别注意：
 
 * “查询某个节点属于哪个 vcluster”走开发机，用 rayctl；具体命令参考 `TOOLS.md`。
+* “cordon / uncordon Kubernetes Node”属于 Kubernetes Node 调度控制，默认走开发机上的 rayctl 节点调度控制；不要优先生成 `kubectl cordon` / `kubectl uncordon`，除非 rayctl 不可用或用户明确要求 kubectl。
 * “查看某台机器上的目录、文件、日志、进程、磁盘、内存、NPU、网卡、路由、DNS”不是 Kubernetes 操作，不能走开发机。
 * 不要把物理机器文件系统查询误判成 Kubernetes Node 查询。
 * 开发机不是 D 集群物理机器操作入口。
