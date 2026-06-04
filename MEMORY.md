@@ -1,9 +1,9 @@
 # MEMORY.md - Long-term Operating Memory
 
 本文件只记录长期稳定的背景、判断原则、安全红线和高优先级 SOP。
-具体 IP、登录命令、命令模板、工具路径放到 `TOOLS.md`。
+具体 IP、登录命令、命令模板、rayctl 最新用法、工具路径放到 `TOOLS.md`。
 
-# Memory 更新原则
+## Memory 更新原则
 
 - `MEMORY.md` 只保存长期稳定的事实、判断原则、操作入口和安全规则。
 - 单次查询结果、节点当前状态、机器数量、未关联 vcluster 的节点列表、故障状态等动态信息，不要直接写入 `MEMORY.md`。
@@ -19,7 +19,7 @@
 | 请求类型                                                                                                                             | 正确入口                                            | 说明                        |
 | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------- |
 | Kubernetes / vcluster / host cluster / rayctl / kubectl / vcjob / Pod / PVC / PV / AFS / Service / Endpoint / Webhook / PodGroup | D 集群开发机                                         | 这是 Kubernetes 逻辑资源操作      |
-| 查询某个物理节点 IP / hostname 属于哪个 vcluster                                                                                             | D 集群开发机 + `rayctl node get -A`                  | 这是 host cluster 视角的节点归属查询 |
+| 查询某个物理节点 IP / hostname 属于哪个 vcluster                                                                                             | D 集群开发机 + rayctl                               | 这是 host cluster 视角的节点归属查询 |
 | 查看某台 D 集群机器上的目录、文件、日志、进程、磁盘、内存、NPU、网卡、路由、DNS、本地脚本                                                                                | 堡垒机 → 跳板机 → sensetime 用户 → ansible 单 IP         | 这是物理机器 / 操作系统级查询          |
 | 在某台 D 集群机器上执行脚本、改配置、删除文件、重启服务                                                                                                    | 堡垒机 → 跳板机 → sensetime 用户 → ansible 单 IP，并且必须先确认 | 这是机器写操作或高风险操作             |
 
@@ -27,7 +27,7 @@
 
 * “看某个 IP / hostname 上的目录、文件、日志、进程、磁盘、内存、NPU、网卡、路由、DNS”属于 **D 集群机器类操作**。
 * “看 Pod、vcjob、PVC、PV、AFS、vcluster、PodGroup、Service、Endpoint、Webhook”属于 **Kubernetes / 集群类操作**。
-* “看某个节点属于哪个 vc / vcluster”属于 **节点归属查询**，走开发机上的 `rayctl node get -A`。
+* “看某个节点属于哪个 vc / vcluster”属于 **节点归属查询**，走开发机上的 rayctl；具体命令参考 `TOOLS.md`。
 * 不要因为用户说“D 集群节点”就默认走开发机。
 * 不要把“物理机器文件系统查询”误判为“Kubernetes Node 查询”。
 
@@ -53,7 +53,7 @@ vcluster 与 host cluster 之间的 Pod、Node 等资源通过 syncer 同步。
 - 每个 vcluster 只对应一种主要机器类型，不要假设一个 vcluster 内混合多种机器类型。
 - 判断任务模板、资源规格、机器类型时，优先根据 vcluster 名称推断，再用节点 label / allocatable 做验证。
 - 不要仅凭 `ring-controller.atlas: ascend-910b` 判断机器类型，该标签可能是默认标签。
-- 机器类型最终应结合 `resource.compute.sensecore.cn/machine-type`、节点 allocatable、rayctl 模板映射共同判断。
+- 机器类型最终应结合 `resource.compute.sensecore.cn/machine-type`、节点 allocatable、rayctl 模板映射共同判断；具体模板映射参考 `TOOLS.md`。
 
 ### vcluster 到芯片/类型映射
 | vcluster | 芯片 / 类型 |
@@ -65,8 +65,8 @@ vcluster 与 host cluster 之间的 Pod、Node 等资源通过 syncer 同步。
 | `c550-h3c` | 沐曦 / MUXI 液冷 |
 | `c550-mohe` | 沐曦 / MUXI 超节点 |
 
-### D 集群 muxi 节点 IP 段对照（通过 `rayctl node get -A` 查询）
-> **重要**：查询 muxi 节点时，不能仅靠 vcluster 关联过滤，因为部分节点可能未关联到任何 vcluster。必须同时按 IP 段 grep 排查。
+### D 集群 muxi 节点 IP 段对照（通过 host cluster 视角 rayctl 查询）
+> **重要**：查询 muxi 节点时，不能仅靠 vcluster 关联过滤，因为部分节点可能未关联到任何 vcluster。必须同时按 IP 段过滤排查。
 
 | IP 段 | 对应 vcluster | 机器类型 | 备注 |
 |---|---|---|---|
@@ -78,8 +78,8 @@ vcluster 与 host cluster 之间的 Pod、Node 等资源通过 syncer 同步。
 
 ---
 
-### D 集群华为 910B 节点 IP 段对照（通过 `rayctl node get -A` 查询）
-> **重要**：查询 910B 节点时，不能仅靠 vcluster 关联过滤，因为部分节点可能未关联到任何 vcluster。必须同时按 IP 段 grep 排查。
+### D 集群华为 910B 节点 IP 段对照（通过 host cluster 视角 rayctl 查询）
+> **重要**：查询 910B 节点时，不能仅靠 vcluster 关联过滤，因为部分节点可能未关联到任何 vcluster。必须同时按 IP 段过滤排查。
 
 | IP 段 | 对应 vcluster | 机器类型 | 备注 |
 |---|---|---|---|
@@ -89,8 +89,8 @@ vcluster 与 host cluster 之间的 Pod、Node 等资源通过 syncer 同步。
 
 ---
 
-### D 集群华为 910C 节点 IP 段对照（通过 `rayctl node get -A` 查询）
-> **重要**：查询 910C 节点时，不能仅靠 vcluster 关联过滤，因为部分节点可能未关联到任何 vcluster。必须同时按 IP 段 grep 排查。
+### D 集群华为 910C 节点 IP 段对照（通过 host cluster 视角 rayctl 查询）
+> **重要**：查询 910C 节点时，不能仅靠 vcluster 关联过滤，因为部分节点可能未关联到任何 vcluster。必须同时按 IP 段过滤排查。
 
 | IP 段 | 对应 vcluster | 机器类型 | 备注 |
 |---|---|---|---|
@@ -135,7 +135,7 @@ vcluster 与 host cluster 之间的 Pod、Node 等资源通过 syncer 同步。
 
 特别注意：
 
-* “查询某个节点属于哪个 vcluster”走开发机，用 `rayctl node get -A`。
+* “查询某个节点属于哪个 vcluster”走开发机，用 rayctl；具体命令参考 `TOOLS.md`。
 * “查看某台机器上的目录、文件、日志、进程、磁盘、内存、NPU、网卡、路由、DNS”不是 Kubernetes 操作，不能走开发机。
 * 不要把物理机器文件系统查询误判成 Kubernetes Node 查询。
 * 开发机不是 D 集群物理机器操作入口。
@@ -212,13 +212,7 @@ kubectl get vcjobs -A
 
 1. 到开发机。
 2. 设置正确 kubeconfig。
-3. 优先执行：
-
-```bash
-rayctl job get job <job-name>
-rayctl job check <job-name>
-```
-
+3. 优先使用 rayctl 查询任务；具体命令参考 `TOOLS.md` 的 “2.3 查询任务”。
 4. 如果 rayctl 信息不足，再进入对应 vcluster kubeconfig，用 kubectl 查询 Pod、vcjob、PodGroup、Event 和日志。
 5. rayctl 结果足够详细时，以 rayctl 为准。
 
@@ -229,11 +223,7 @@ rayctl job check <job-name>
 提交任务必须使用 vcluster kubeconfig。
 禁止使用 host cluster kubeconfig 提交 vcluster 任务。
 
-任务创建优先使用：
-
-```bash
-rayctl job create <template>
-```
+任务创建优先使用 rayctl；具体模板、参数和命令参考 `TOOLS.md` 的 “3. rayctl 任务模板”。
 
 创建任务属于写操作，必须先向用户确认。
 
@@ -249,24 +239,7 @@ rayctl job create <template>
 * 是否挂载 PVC
 * 可能影响
 
-模板选择原则：
-
-| vcluster      | 芯片 / 类型  | 模板                                             |
-| ------------- | -------- | ---------------------------------------------- |
-| `a2-*`        | 华为/npu910B     | `910b-single` / `910b-multi`                   |
-| `a3-*`        | 华为/npu910C     | `910c-single` / `910c-multi`                   |
-| `c550-jiaofu` | 沐曦/MUXI 风冷  | `c550-default-single` / `c550-default-multi`   |
-| `c550-ai4s`   | 沐曦/MUXI 风冷  | `c550-default-single` / `c550-default-multi`   |
-| `c550-h3c`    | 沐曦/MUXI 液冷  | `c550-h3c-single` / `c550-h3c-multi`           |
-| `c550-mohe`   | 沐曦/MUXI 超节点 | `c550-superpod-single` / `c550-superpod-multi` |
-
-注意：
-
-* `x2ls.ri.i80` = 风冷
-* `x2ls.ri.i70` = 液冷
-* `x3ls.ri.i80` = 超节点
-* c550 多机模板没有 `--logical-supernodes`
-* 910C 多机模板才可能使用 `--logical-supernodes`
+模板选择和参数细节不要写死在 `MEMORY.md`，以 `TOOLS.md` 中 rayctl 任务模板为准。
 
 ---
 
@@ -274,7 +247,7 @@ rayctl job create <template>
 
 查询 AFS / PVC / PV 时：
 
-1. 先使用 `rayctl afs check <afs-name>`。
+1. 先使用 rayctl 查询；具体命令参考 `TOOLS.md` 的 “2.6 查询 AFS / PVC / PV”。
 2. AFS 名称由用户提供，不要擅自拼接或修改前缀。
 3. 如果 rayctl 返回 Host PV 名称，再直接查询该 PV。
 4. 已经有完整资源名时，不要再用 grep 模糊匹配。
@@ -292,7 +265,7 @@ rayctl job create <template>
 在 vcluster 中创建 PVC 时：
 
 * 禁止直接用 `kubectl create pvc`
-* 必须使用 `rayctl pvc create`
+* 必须使用 rayctl 创建 PVC；具体命令参考 `TOOLS.md` 的 “2.7 创建 PVC”。
 * 必须使用 vcluster kubeconfig
 * 不能使用 host cluster kubeconfig 创建 vcluster PVC
 
@@ -306,12 +279,7 @@ pvc-<afs-name>
 
 创建 PVC 属于写操作，必须先向用户确认。
 
-创建 PVC 后必须检查：
-
-```bash
-rayctl pvc check <pvc-name>
-kubectl get pvc <pvc-name> -o yaml
-```
+创建 PVC 后必须检查；具体检查命令参考 `TOOLS.md` 的 “2.7 创建 PVC”。
 
 如果 PVC 是 Pending：
 
@@ -330,13 +298,8 @@ PVC Pending 时禁止创建挂载该 PVC 的任务。
 
 1. 到开发机。
 2. 使用 host cluster kubeconfig。
-3. 执行：
-
-```bash
-rayctl node get -A | grep <IP或hostname>
-```
-
-4. 结果最后一列即 vcluster 名称。
+3. 使用 rayctl 从 host cluster 视角查询节点归属。
+4. 具体命令模板和 rayctl 最新用法以 `TOOLS.md` 的 “2.5 rayctl 节点查询” 为准。
 
 不要进入 vcluster 内部倒查节点归属。
 

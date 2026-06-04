@@ -157,6 +157,19 @@
 cat <<'REMOTE' | ssh -p 32222 root@10.140.158.149 'bash -s'
 <远程脚本内容>
 REMOTE
+```
+
+### rayctl 使用索引
+
+rayctl 是 D 集群 Kubernetes / vcluster 日常查询的优先工具。本节集中维护 rayctl 的具体使用方法，`MEMORY.md` 只保留入口原则和长期规则。
+
+常用位置：
+
+* 节点归属、IP 段过滤、节点详情：见 `2.5 rayctl 节点查询`
+* 任务查询：见 `2.3 查询任务`
+* AFS / PVC / PV 查询：见 `2.6 查询 AFS / PVC / PV`
+* PVC 创建：见 `2.7 创建 PVC`
+* 任务创建模板：见 `3. rayctl 任务模板`
 
 ### 2.1 登录开发机
 
@@ -237,11 +250,13 @@ kubectl get vcjobs -A
 
 ---
 
-### cp2.5 查询节点归属 vcluster
+### 2.5 rayctl 节点查询
+
+#### 查询节点归属 vcluster
 
 ```bash
 export KUBECONFIG=/root/kubeconfig
-rayctl node get -A | grep <ip-or-hostname>
+rayctl node get -A <ip-fragment>
 ```
 
 结果最后一列是 vcluster 名称。
@@ -249,11 +264,29 @@ rayctl node get -A | grep <ip-or-hostname>
 示例：
 
 ```bash
+rayctl node get -A 10.12.138.26
+rayctl node get -A 10.12.138
+rayctl node get -A '10.12.138|10.140.214'
+```
+
+兼容旧版 rayctl 或按 hostname 查询时：
+
+```bash
 rayctl node get -A | grep 10.12.138.26
 rayctl node get -A | grep host-10-12-138-26
 ```
 
 不要进入 vcluster 内部倒查节点归属。
+
+#### 查询节点详情 / 检查节点资源
+
+查询节点详情 / 检查节点资源与 vcluster Pod 时，可以直接传节点名或完整 IP：
+
+```bash
+rayctl node check host-10-140-214-222
+rayctl node check 10.140.214.222
+rayctl node describe 10.140.214.222
+```
 
 ---
 
