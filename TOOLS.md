@@ -1042,6 +1042,35 @@ kubectl get node -L mccl-test
 
 ---
 
+### 7.4 MUXI 单机 MCCL 日志化测试
+
+适用场景：在单台 D 集群 MUXI 机器上运行 `~sensetime/mccl.sh` 做 8 卡 MCCL 验证。
+
+必须在跳板机 `10.140.220.33` 的 `sensetime` 用户下执行 ansible 单 IP，不要在本地或开发机执行 ansible。
+
+推荐将输出写入目标机 `~sensetime` 下的日志文件，避免长输出在 OpenClaw 会话中截断：
+
+```bash
+ansible all -i '<目标IP>,' -m shell -a 'cd ~sensetime && LOG=mccl-$(date +%Y%m%d-%H%M%S).log; for i in 1 2 3 4 5; do echo "===== MCCL RUN ${i}/5 START $(date) =====" | tee -a "$LOG"; sudo bash mccl.sh 8 >> "$LOG" 2>&1; rc=$?; echo "===== MCCL RUN ${i}/5 END rc=${rc} $(date) =====" | tee -a "$LOG"; if test "$rc" -ne 0; then echo "LOG=$LOG"; exit "$rc"; fi; done; echo "LOG=$LOG"'
+```
+
+跑完后读取日志，优先看 `Avg bus bandwidth`：
+
+```bash
+ansible all -i '<目标IP>,' -m shell -a 'cd ~sensetime && tail -n 300 <log-file>'
+ansible all -i '<目标IP>,' -m shell -a 'cd ~sensetime && grep -E "MCCL RUN|The test is|Avg bus bandwidth|Out of bounds|ERROR|Error|error|failed|Failed|timeout|Timeout|rc=" <log-file>'
+```
+
+判断重点：
+
+* 5 轮都应出现 `END rc=0`。
+* 每轮应覆盖 `all_reduce_perf`、`all_gather_perf`、`reduce_scatter_perf`、`sendrecv_perf`、`alltoall_perf`。
+* 主要关注每个 benchmark 输出的 `# Avg bus bandwidth`。
+* `# Out of bounds values : 0 OK` 表示校验正常。
+* 如果出现非 0 rc、error / failed / timeout、长期无日志推进或缺少 benchmark，应停止后续动作并汇报原始日志。
+
+---
+
 ## 8. 常用排查命令
 
 ### 8.1 查看 Kubernetes 节点资源

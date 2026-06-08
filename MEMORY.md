@@ -394,7 +394,9 @@ MCCL 测试相关内容优先遵循最新 `TOOLS.md` 和当前有效 skill。
   * worker replicas
   * `CARD_NUM`
 * 测试结果输出时，保留原始日志，不自行改写。
-* 不擅自计算或汇总用户要求保留原始输出的 MCCL 结果。
+* MUXI 单机 MCCL 测试默认连续跑 5 次，并将输出重定向到目标机 `~sensetime` 下的日志文件。
+* 判断 MUXI MCCL 结果时，重点查看每轮每个 benchmark 的 `# Avg bus bandwidth`、`rc=0`、`# Out of bounds values : 0 OK`，以及是否出现 error / failed / timeout / hang。
+* 不擅自计算或汇总用户要求保留原始输出的 MCCL 结果；如需摘要，应基于日志中的原始 `Avg bus bandwidth` 行。
 
 ---
 
