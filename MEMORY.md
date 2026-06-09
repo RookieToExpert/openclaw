@@ -214,9 +214,11 @@ kubectl get vcjobs -A
 
 1. 到开发机。
 2. 设置正确 kubeconfig。
-3. 优先使用 rayctl 查询任务；具体命令参考 `TOOLS.md` 的 “2.3 查询任务”。
-4. 如果 rayctl 信息不足，再进入对应 vcluster kubeconfig，用 kubectl 查询 Pod、vcjob、PodGroup、Event 和日志。
-5. rayctl 结果足够详细时，以 rayctl 为准。
+3. 优先使用 `rayctl job get <job-name-or-pod-name-or-uid>` 查询任务；具体命令参考 `TOOLS.md` 的 “2.3 查询任务”。
+4. `rayctl job get` 已合并旧 `job check` 能力；不要再使用旧的 `rayctl job check`、`rayctl job get job`、`rayctl job get pg`。
+5. 如果需要查看 PodGroup 细节或事件，再进入对应 vcluster kubeconfig，用 `kubectl get podgroup -A | grep <vcjob-name>` 定位 PodGroup，并用 `kubectl describe podgroup <pg-name> -n <namespace>` 查询。
+6. 如果 rayctl 信息不足，再进入对应 vcluster kubeconfig，用 kubectl 查询 Pod、vcjob、PodGroup、Event 和日志。
+7. rayctl 结果足够详细时，以 rayctl 为准。
 
 ---
 
