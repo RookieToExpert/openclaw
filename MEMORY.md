@@ -377,45 +377,56 @@ global rank == world_size - 1
 
 ---
 
-### 4.4 MCCL 测试原则
+### 4.4 MCCL 测试场景区分
 
-MCCL 测试相关内容优先遵循最新 `TOOLS.md` 和当前有效 skill。
-如果 skill 路径出现 `symlink-escape` 或内容明显过期，不要依赖该 skill。
+MCCL 测试必须先区分场景：
+
+1. 单机 MUXI MCCL 维修验收测试。
+2. 多机 / 平台纳管 MCCL 测试。
+
+这两个场景不能混用流程。
+
+#### 4.4.1 单机 MUXI MCCL 维修验收测试
+
+适用场景：维修机器、故障机器恢复后，在单台 D 集群物理机上确认 8 卡 MCCL 是否正常。
+
+入口必须是：
+
+```text
+本地 → 堡垒机 → 跳板机 → sensetime 用户 → ansible 单 IP
+```
 
 关键原则：
 
-* 测试前可以给节点打标。
-* 测试后需要删标。
-* 打标 / 删标属于写操作，必须先确认。
+* 不创建 vcjob。
+* 不打 Kubernetes node label。
+* 不删 Kubernetes node label。
+* 不为了测试先 uncordon。
+* 测试前如果节点处于维修 / cordon 状态，应保持原状态。
+* 只在用户明确要求“通过后 uncordon”时，测试通过后再走开发机用 `rayctl node uncordon`。
+* 单机测试默认运行目标机上的 `~sensetime/mccl.sh 8`，连续 5 轮。
+* 如果目标机没有 `~sensetime/mccl.sh`，按 `TOOLS.md` 中记录的标准脚本写入；写入属于写操作，必须确认。
+* 输出必须落到目标机 `~sensetime/mccl-*.log`。
+* 判断重点是每轮每个 benchmark 的 `# Avg bus bandwidth`、`rc=0`、`# Out of bounds values : 0 OK`，以及是否出现 error / failed / timeout / hang。
+
+#### 4.4.2 多机 / 平台纳管 MCCL 测试
+
+适用场景：通过平台创建 vcjob / Volcano Job，对多台机器进行纳管式 MCCL 测试。
+
+关键原则：
+
+* 该场景才可能涉及 Kubernetes node label。
+* 测试前打标、测试后删标都属于写操作，必须先确认。
 * 出现坏节点时，可以动态排除。
 * 排除坏节点后必须同步调整：
 
   * `minAvailable`
   * worker replicas
   * `CARD_NUM`
+
+* 多机场景按最新 `TOOLS.md` 或当前有效 `mccl-test` skill 执行。
 * 测试结果输出时，保留原始日志，不自行改写。
-* MUXI 单机 MCCL 测试默认连续跑 5 次，并将输出重定向到目标机 `~sensetime` 下的日志文件。
-* 判断 MUXI MCCL 结果时，重点查看每轮每个 benchmark 的 `# Avg bus bandwidth`、`rc=0`、`# Out of bounds values : 0 OK`，以及是否出现 error / failed / timeout / hang。
 * 不擅自计算或汇总用户要求保留原始输出的 MCCL 结果；如需摘要，应基于日志中的原始 `Avg bus bandwidth` 行。
-
-### 4.5 调度资源不足 / 碎片化判断原则
-
-排查 Volcano / PodGroup / Pod Pending 时，不要只看 vcluster 总资源量。Kubernetes 调度要求单个 Pod 的 request 必须在同一台可选节点上同时满足。
-
-判断是否资源不足或碎片化时，应按节点计算：
-
-```text
-节点剩余资源 = node.status.allocatable - 已调度且未完成 Pod 的 requests
-```
-
-统计口径：
-
-* 只统计已经有 `spec.nodeName` 的 Pod。
-* 跳过 `Succeeded` / `Failed` Pod。
-* 对每个节点累加未完成 Pod 的 CPU / memory / accelerator requests。
-* 再用节点 `status.allocatable` 扣减已分配 requests。
-
-如果 vcluster 总量看起来有资源，但没有任何单节点同时满足目标 Pod 的 CPU / memory / accelerator / nodeSelector / affinity / taint toleration，则通常是资源碎片化或调度约束导致的不可调度。
 
 ---
 

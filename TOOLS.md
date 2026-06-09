@@ -1006,7 +1006,107 @@ https://iqeubg8au73.feishu.cn/sheets/IC10sYPdjhvLnpt2GVGc1EZNngh
 
 ## 7. MCCL 测试辅助命令
 
-### 7.1 节点打标
+MCCL 测试必须先区分场景：
+
+* 单机 MUXI MCCL 维修验收测试：物理机单机测试，走跳板机 `sensetime` 用户下的 ansible 单 IP。
+* 多机 / 平台纳管 MCCL 测试：平台 vcjob / Volcano Job 测试，才可能涉及 Kubernetes node label、PodGroup、动态排除节点等。
+
+不要把两个场景混用。
+
+### 7.1 单机 MUXI MCCL 维修验收测试
+
+适用场景：维修机器、故障机器恢复后，在单台 D 集群物理机上确认 8 卡 MCCL 是否正常。
+
+执行入口：
+
+```text
+本地 OpenClaw exec
+  → ssh 堡垒机 10.140.3.216:5906
+  → JumpServer 中输入 220.33 进入跳板机
+  → sudo su sensetime
+  → 在 sensetime 用户下执行 ansible 单 IP
+```
+
+禁止事项：
+
+* 不要在本地或开发机执行 ansible。
+* 不要创建 vcjob。
+* 不要打 Kubernetes node label。
+* 不要删 Kubernetes node label。
+* 不要为了单机测试先 uncordon。
+* 节点如果原本处于维修 / cordon 状态，单机测试期间应保持原状态。
+* 只有用户明确要求“通过后 uncordon”时，测试通过后才走开发机用 `rayctl node uncordon`。
+
+#### 7.1.1 标准单机 `mccl.sh`
+
+如果目标机 `~sensetime/mccl.sh` 不存在，按下面内容写入。写入脚本属于写操作，必须先确认。
+
+```bash
+#!/bin/bash
+export MACA_PATH=/opt/maca
+export LD_LIBRARY_PATH=${MACA_PATH}/lib:${MACA_PATH}/ompi/lib
+export FORCE_ACTIVE_WAIT=2
+export MCCL_PCIE_BUFFER_MODE=0
+
+GPU_NUM=4
+if [[ $1 -gt 0 && $1 -lt 65 ]]; then
+  GPU_NUM=$1
+fi
+TEST_DIR=${MACA_PATH}/samples/mccl_tests/perf/mccl_perf
+BENCH_NAMES="all_reduce_perf all_gather_perf reduce_scatter_perf sendrecv_perf alltoall_perf"
+#BENCH_NAMES=all_reduce_perf
+MPI_PROCESS_NUM=${GPU_NUM}
+MPI_RUN_OPT="--allow-run-as-root -mca pml ^ucx -mca osc ^ucx -mca btl ^openib"
+for BENCH in ${BENCH_NAMES}; do
+echo -n "The test is ${BENCH}, the maca version is " && realpath ${MACA_PATH}
+${MACA_PATH}/ompi/bin/mpirun -x MCCL_PCIE_BUFFER_MODE -np ${MPI_PROCESS_NUM} ${MPI_RUN_OPT} ${TEST_DIR}/${BENCH} -b 1K -e 1G -d bfloat16 -f 2 -g 1 -n 10
+done
+```
+
+检查目标机是否已有脚本：
+
+```bash
+ansible all -i '<目标IP>,' -m shell -a 'test -f ~sensetime/mccl.sh && ls -l ~sensetime/mccl.sh || echo MISSING'
+```
+
+写入后权限应为：
+
+```bash
+chmod 755 /home/sensetime/mccl.sh
+chown sensetime:sensetime /home/sensetime/mccl.sh
+```
+
+#### 7.1.2 标准五轮八卡测试命令
+
+推荐将输出写入目标机 `~sensetime` 下的日志文件，避免长输出在 OpenClaw 会话中截断：
+
+```bash
+ansible all -i '<目标IP>,' -m shell -a 'cd ~sensetime && LOG=mccl-$(date +%Y%m%d-%H%M%S).log; for i in 1 2 3 4 5; do echo "===== MCCL RUN ${i}/5 START $(date) =====" | tee -a "$LOG"; sudo bash mccl.sh 8 >> "$LOG" 2>&1; rc=$?; echo "===== MCCL RUN ${i}/5 END rc=${rc} $(date) =====" | tee -a "$LOG"; if test "$rc" -ne 0; then echo "LOG=$LOG"; exit "$rc"; fi; done; echo "LOG=$LOG"'
+```
+
+#### 7.1.3 读取日志和判断结果
+
+读取日志摘要，优先看 `Avg bus bandwidth`：
+
+```bash
+ansible all -i '<目标IP>,' -m shell -a 'cd ~sensetime && grep -E "MCCL RUN|The test is|Avg bus bandwidth|Out of bounds|ERROR|Error|error|failed|Failed|timeout|Timeout|rc=" <log-file>'
+```
+
+判断重点：
+
+* 5 轮都应出现 `END rc=0`。
+* 每轮应覆盖 `all_reduce_perf`、`all_gather_perf`、`reduce_scatter_perf`、`sendrecv_perf`、`alltoall_perf`。
+* 主要关注每个 benchmark 输出的 `# Avg bus bandwidth`。
+* `# Out of bounds values : 0 OK` 表示校验正常。
+* 如果出现非 0 rc、error / failed / timeout、长期无日志推进或缺少 benchmark，应停止后续动作并汇报原始日志。
+
+### 7.2 多机 / 平台纳管 MCCL 测试
+
+适用场景：通过平台创建 vcjob / Volcano Job，对多台机器进行纳管式 MCCL 测试。
+
+该场景才可能涉及 Kubernetes node label、PodGroup、动态排除节点等。不要把本节流程用于单机维修验收测试。
+
+#### 7.2.1 节点打标
 
 写操作，执行前必须确认。
 
@@ -1015,9 +1115,7 @@ export KUBECONFIG=/root/kubeconfig
 kubectl label node <node-name> mccl-test=<date> --overwrite
 ```
 
----
-
-### 7.2 节点删标
+#### 7.2.2 节点删标
 
 写操作，执行前必须确认。
 
@@ -1026,9 +1124,7 @@ export KUBECONFIG=/root/kubeconfig
 kubectl label node <node-name> mccl-test- --overwrite
 ```
 
----
-
-### 7.3 查询标签
+#### 7.2.3 查询标签
 
 ```bash
 kubectl get node <node-name> --show-labels | grep mccl-test
@@ -1040,34 +1136,12 @@ kubectl get node <node-name> --show-labels | grep mccl-test
 kubectl get node -L mccl-test
 ```
 
----
+#### 7.2.4 多机测试排障原则
 
-### 7.4 MUXI 单机 MCCL 日志化测试
-
-适用场景：在单台 D 集群 MUXI 机器上运行 `~sensetime/mccl.sh` 做 8 卡 MCCL 验证。
-
-必须在跳板机 `10.140.220.33` 的 `sensetime` 用户下执行 ansible 单 IP，不要在本地或开发机执行 ansible。
-
-推荐将输出写入目标机 `~sensetime` 下的日志文件，避免长输出在 OpenClaw 会话中截断：
-
-```bash
-ansible all -i '<目标IP>,' -m shell -a 'cd ~sensetime && LOG=mccl-$(date +%Y%m%d-%H%M%S).log; for i in 1 2 3 4 5; do echo "===== MCCL RUN ${i}/5 START $(date) =====" | tee -a "$LOG"; sudo bash mccl.sh 8 >> "$LOG" 2>&1; rc=$?; echo "===== MCCL RUN ${i}/5 END rc=${rc} $(date) =====" | tee -a "$LOG"; if test "$rc" -ne 0; then echo "LOG=$LOG"; exit "$rc"; fi; done; echo "LOG=$LOG"'
-```
-
-跑完后读取日志，优先看 `Avg bus bandwidth`：
-
-```bash
-ansible all -i '<目标IP>,' -m shell -a 'cd ~sensetime && tail -n 300 <log-file>'
-ansible all -i '<目标IP>,' -m shell -a 'cd ~sensetime && grep -E "MCCL RUN|The test is|Avg bus bandwidth|Out of bounds|ERROR|Error|error|failed|Failed|timeout|Timeout|rc=" <log-file>'
-```
-
-判断重点：
-
-* 5 轮都应出现 `END rc=0`。
-* 每轮应覆盖 `all_reduce_perf`、`all_gather_perf`、`reduce_scatter_perf`、`sendrecv_perf`、`alltoall_perf`。
-* 主要关注每个 benchmark 输出的 `# Avg bus bandwidth`。
-* `# Out of bounds values : 0 OK` 表示校验正常。
-* 如果出现非 0 rc、error / failed / timeout、长期无日志推进或缺少 benchmark，应停止后续动作并汇报原始日志。
+* 出现坏节点时，可以动态排除。
+* 排除坏节点后必须同步调整 `minAvailable`、worker replicas、`CARD_NUM`。
+* 多机场景按当前最新 `mccl-test` skill 或专门工具模板执行。
+* 测试结果输出时，保留原始日志，不自行改写。
 
 ---
 
