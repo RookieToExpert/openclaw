@@ -269,7 +269,11 @@ export KUBECONFIG=/root/D/ai4chem
 
 ### 2.3 查询任务
 
-优先 rayctl。新版 `rayctl job get` 已合并旧 `job check` 能力，并删除了旧的 `job get job` / `job get pg` 子入口：
+任务查询按以下顺序处理。
+
+#### 2.3.1 第一步：rayctl 快速定位和诊断
+
+优先使用 rayctl。新版 `rayctl job get` 已合并旧 `job check` 能力，并删除了旧的 `job get job` / `job get pg` 子入口：
 
 ```bash
 export KUBECONFIG=/root/kubeconfig
@@ -287,12 +291,17 @@ rayctl -k /root/D/<vc-name> job get <job-name-or-pod-name-or-uid>
   * running：展示原来的任务详情、Pod、节点、日志等信息。
   * pending / startup：在第一张表中合并展示“结论”和“下一步”，不显示 `LATEST LOGS`。
 
+rayctl 输出足够明确时，以 rayctl 为准。
+
+#### 2.3.2 第二步：rayctl 不够明确时查 vcluster 资源
+
 如果需要进入 vcluster 再查 Pod / vcjob：
 
 ```bash
 export KUBECONFIG=/root/D/<vc-name>
 kubectl get vcjob -A | grep <job-name>
 kubectl get pod -A | grep <job-name>
+kubectl describe pod <pod-name> -n <namespace>
 ```
 
 如果需要查看 PodGroup 细节或事件，先在 vcluster 中定位 PodGroup，再 describe：
@@ -302,6 +311,197 @@ export KUBECONFIG=/root/D/<vc-name>
 kubectl get podgroup -A | grep <vcjob-name>
 kubectl describe podgroup <podgroup-name> -n <namespace>
 ```
+
+#### 2.3.3 第三步：NotEnoughResources / 资源碎片化判断
+
+适用场景：`rayctl job get` 或 PodGroup 显示 `NotEnoughResources` / `Insufficient cpu` / `Insufficient memory` / `Insufficient <accelerator>`，但用户认为 vcluster 总量应该有资源。
+
+精确判断不要只看 vcluster 总资源量，也不要只看 `rayctl node get -A -l` 概览。应使用 vcluster kubeconfig，通过 kubectl 读取：
+
+* 目标 Pending Pod 的 requests / nodeSelector / affinity / tolerations。
+* 每个 node 的 `status.allocatable`。
+* 已经调度到每个 node、且 phase 不是 `Succeeded` / `Failed` 的 Pod requests。
+
+判断公式：
+
+```text
+单节点剩余资源 = node.status.allocatable - 该节点已调度且未完成 Pod 的 requests
+```
+
+目标 Pod 可调度，需要同一台节点同时满足 CPU / memory / accelerator / machine-type / nodeSelector / affinity / unschedulable 等条件。各类资源在不同节点上分别有剩余，但没有同一节点同时满足，就是资源碎片化。
+
+先查看目标 Pod 请求和调度约束：
+
+```bash
+export KUBECONFIG=/root/D/<vc-name>
+kubectl get pod <pod-name> -n <namespace> -o json | jq -r '
+  "nodeName=" + (.spec.nodeName // ""),
+  "schedulerName=" + (.spec.schedulerName // ""),
+  "priorityClass=" + (.spec.priorityClassName // ""),
+  "nodeSelector=" + ((.spec.nodeSelector // {})|tojson),
+  "tolerations=" + ((.spec.tolerations // [])|tojson),
+  "affinity=" + ((.spec.affinity // {})|tojson),
+  (.spec.containers[] | "container=" + .name + " requests=" + ((.resources.requests // {})|tojson) + " limits=" + ((.resources.limits // {})|tojson))
+'
+```
+
+再运行下面的只读脚本做逐节点匹配。脚本会从目标 Pod 自动读取 requests，并从 nodeAffinity 中识别 `resource.compute.sensecore.cn/machine-type` 约束；如果有更复杂的 selector / affinity，需要结合脚本输出和 Pod 原始约束人工判断。
+
+```bash
+NS=<namespace> POD=<pod-name> python3 - <<'PYCHECK'
+import json, os, subprocess
+
+ns = os.environ.get('NS', 'default')
+pod_name = os.environ['POD']
+
+def get_json(args):
+    return json.loads(subprocess.check_output(args))
+
+def cpu_to_m(v):
+    if not v:
+        return 0
+    s = str(v)
+    return int(s[:-1]) if s.endswith('m') else int(float(s) * 1000)
+
+def mem_to_ki(v):
+    if not v:
+        return 0
+    s = str(v)
+    units = {"Ki":1, "Mi":1024, "Gi":1024**2, "Ti":1024**3, "K":1, "M":1000, "G":1000**2, "T":1000**3}
+    for u, m in units.items():
+        if s.endswith(u):
+            return int(float(s[:-len(u)]) * m)
+    return int(s) // 1024
+
+def qty_int(v):
+    if not v:
+        return 0
+    return int(float(str(v)))
+
+def collect_machine_types(pod):
+    values = set()
+    affinity = pod.get('spec', {}).get('affinity', {}) or {}
+    terms = affinity.get('nodeAffinity', {}).get('requiredDuringSchedulingIgnoredDuringExecution', {}).get('nodeSelectorTerms', []) or []
+    for term in terms:
+        for expr in term.get('matchExpressions', []) or []:
+            if expr.get('key') == 'resource.compute.sensecore.cn/machine-type' and expr.get('operator') in ('In', 'Equals'):
+                values.update(expr.get('values', []) or [])
+    selector = pod.get('spec', {}).get('nodeSelector', {}) or {}
+    if 'resource.compute.sensecore.cn/machine-type' in selector:
+        values.add(selector['resource.compute.sensecore.cn/machine-type'])
+    return values
+
+def pod_requests(pod):
+    cpu = mem = 0
+    acc = {}
+    for c in pod.get('spec', {}).get('containers', []) or []:
+        req = c.get('resources', {}).get('requests', {}) or {}
+        cpu += cpu_to_m(req.get('cpu'))
+        mem += mem_to_ki(req.get('memory'))
+        for k, v in req.items():
+            if k in ('cpu', 'memory'):
+                continue
+            acc[k] = acc.get(k, 0) + qty_int(v)
+    return cpu, mem, acc
+
+target = get_json(['kubectl', 'get', 'pod', pod_name, '-n', ns, '-o', 'json'])
+need_cpu, need_mem, need_acc = pod_requests(target)
+need_machine_types = collect_machine_types(target)
+node_selector = target.get('spec', {}).get('nodeSelector', {}) or {}
+
+nodes = get_json(['kubectl', 'get', 'nodes', '-o', 'json'])['items']
+pods = get_json(['kubectl', 'get', 'pods', '-A', '-o', 'json'])['items']
+
+alloc = {}
+for n in nodes:
+    name = n['metadata']['name']
+    labels = n['metadata'].get('labels', {}) or {}
+    a = n['status'].get('allocatable', {}) or {}
+    alloc[name] = {
+        'labels': labels,
+        'unsched': bool(n.get('spec', {}).get('unschedulable')),
+        'cpu': cpu_to_m(a.get('cpu')),
+        'mem': mem_to_ki(a.get('memory')),
+        'acc': {k: qty_int(v) for k, v in a.items() if k not in ('cpu', 'memory', 'pods', 'ephemeral-storage')},
+        'pods': 0,
+        'used_cpu': 0,
+        'used_mem': 0,
+        'used_acc': {},
+    }
+
+for p in pods:
+    node = p.get('spec', {}).get('nodeName')
+    phase = p.get('status', {}).get('phase')
+    if not node or node not in alloc or phase in ('Succeeded', 'Failed'):
+        continue
+    cpu, mem, acc = pod_requests(p)
+    alloc[node]['pods'] += 1
+    alloc[node]['used_cpu'] += cpu
+    alloc[node]['used_mem'] += mem
+    for k, v in acc.items():
+        alloc[node]['used_acc'][k] = alloc[node]['used_acc'].get(k, 0) + v
+
+rows = []
+fit = []
+reason_counts = {}
+for name, d in alloc.items():
+    bad = []
+    labels = d['labels']
+    if d['unsched']:
+        bad.append('unsched')
+    for k, v in node_selector.items():
+        if labels.get(k) != v:
+            bad.append('nodeSelector')
+            break
+    if need_machine_types and labels.get('resource.compute.sensecore.cn/machine-type') not in need_machine_types:
+        bad.append('machine-type')
+    free_cpu = d['cpu'] - d['used_cpu']
+    free_mem = d['mem'] - d['used_mem']
+    if free_cpu < need_cpu:
+        bad.append('cpu')
+    if free_mem < need_mem:
+        bad.append('memory')
+    free_acc = {}
+    for k, v in need_acc.items():
+        free = d['acc'].get(k, 0) - d['used_acc'].get(k, 0)
+        free_acc[k] = free
+        if free < v:
+            bad.append(k)
+    for b in set(bad):
+        reason_counts[b] = reason_counts.get(b, 0) + 1
+    row = {
+        'name': name,
+        'free_cpu': free_cpu / 1000,
+        'free_mem_gi': free_mem / 1024**2,
+        'free_acc': free_acc,
+        'used_cpu': d['used_cpu'] / 1000,
+        'used_mem_gi': d['used_mem'] / 1024**2,
+        'used_acc': {k: d['used_acc'].get(k, 0) for k in need_acc},
+        'pods': d['pods'],
+        'status': ','.join(bad) or 'FIT',
+    }
+    rows.append(row)
+    if not bad:
+        fit.append(row)
+
+print('TARGET', f'{ns}/{pod_name}')
+print('NEED', 'cpu=', need_cpu/1000, 'memoryGi=', need_mem/1024**2, 'accelerators=', need_acc, 'machineTypes=', sorted(need_machine_types) or '<any>', 'nodeSelector=', node_selector)
+print('candidate nodes:', len(rows), 'fit:', len(fit), 'reason_counts_overlap:', reason_counts)
+print('TOP_FREE_CANDIDATES name free_cpu free_memGi free_acc used_cpu used_memGi used_acc pods status')
+for r in sorted(rows, key=lambda x: (sum(x['free_acc'].values()), x['free_cpu'], x['free_mem_gi']), reverse=True)[:30]:
+    print(r['name'], f"free_cpu={r['free_cpu']:.3f}", f"free_memGi={r['free_mem_gi']:.1f}", 'free_acc='+json.dumps(r['free_acc'], ensure_ascii=False), f"used_cpu={r['used_cpu']:.3f}", f"used_memGi={r['used_mem_gi']:.1f}", 'used_acc='+json.dumps(r['used_acc'], ensure_ascii=False), f"pods={r['pods']}", 'status='+r['status'], sep='	')
+print('FIT_NODES')
+for r in sorted(fit, key=lambda x: x['name']):
+    print(r['name'], f"free_cpu={r['free_cpu']:.3f}", f"free_memGi={r['free_mem_gi']:.1f}", 'free_acc='+json.dumps(r['free_acc'], ensure_ascii=False), f"pods={r['pods']}", sep='	')
+PYCHECK
+```
+
+输出判断：
+
+* `fit > 0`：至少存在理论可容纳节点；如果仍 Pending，应继续查 taint / toleration、完整 affinity、队列、配额、调度器事件等。
+* `fit = 0` 且某类资源在所有候选节点都不足：该类资源不足。
+* `fit = 0` 但 CPU / memory / accelerator 分别在不同节点上有剩余：资源碎片化。
+* `reason_counts_overlap` 是重叠计数，一个节点可能同时因为 CPU、memory、accelerator 不满足而被计入多类。
 
 ---
 
@@ -1222,153 +1422,7 @@ kubectl describe podgroup <podgroup-name> -n <namespace>
 
 ### 8.6 Pending 任务资源碎片化检查
 
-适用场景：`rayctl job get` 或 PodGroup 显示 `NotEnoughResources`，但用户认为 vcluster 总量应该有资源。
-
-先用 rayctl 定位任务、vcluster、namespace、PodGroup 和 inspect Pod：
-
-```bash
-export KUBECONFIG=/root/kubeconfig
-rayctl job get <job-name-or-pod-name-or-uid>
-```
-
-如果需要 PodGroup 事件，切到目标 vcluster 后用 kubectl 查询：
-
-```bash
-export KUBECONFIG=/root/D/<vc-name>
-kubectl get podgroup -A | grep <vcjob-name>
-kubectl describe podgroup <podgroup-name> -n <namespace>
-```
-
-切到目标 vcluster 后查看 Pod 请求和调度约束：
-
-```bash
-export KUBECONFIG=/root/D/<vc-name>
-kubectl get pod <pod-name> -n <namespace> -o json | jq -r '
-  "nodeName=" + (.spec.nodeName // ""),
-  "schedulerName=" + (.spec.schedulerName // ""),
-  "priorityClass=" + (.spec.priorityClassName // ""),
-  "nodeSelector=" + ((.spec.nodeSelector // {})|tojson),
-  "tolerations=" + ((.spec.tolerations // [])|tojson),
-  "affinity=" + ((.spec.affinity // {})|tojson),
-  (.spec.containers[] | "container=" + .name + " requests=" + ((.resources.requests // {})|tojson) + " limits=" + ((.resources.limits // {})|tojson))
-'
-```
-
-按节点扣减已调度 Pod requests，判断是否存在单节点可容纳目标 Pod。下面脚本是只读检查，可按目标 Pod request 修改 `need_*` 和机器类型：
-
-```bash
-python3 - <<'PY'
-import json, subprocess
-
-def get_json(args):
-    return json.loads(subprocess.check_output(args))
-
-def cpu_to_m(v):
-    if not v:
-        return 0
-    s = str(v)
-    return int(s[:-1]) if s.endswith('m') else int(float(s) * 1000)
-
-def mem_to_ki(v):
-    if not v:
-        return 0
-    s = str(v)
-    units = {"Ki":1, "Mi":1024, "Gi":1024**2, "Ti":1024**3, "K":1, "M":1000, "G":1000**2, "T":1000**3}
-    for u, m in units.items():
-        if s.endswith(u):
-            return int(float(s[:-len(u)]) * m)
-    return int(s) // 1024
-
-def qty_int(v):
-    if not v:
-        return 0
-    return int(float(str(v)))
-
-# 按目标 Pending Pod 的 requests / affinity 修改。
-need_cpu_m = 64000
-need_mem_ki = 480 * 1024**2
-need_accelerator = 2
-accelerator_key = 'huawei.com/Ascend910'
-need_machine_type = 'h2ls.ru.k10'
-
-nodes = get_json(['kubectl', 'get', 'nodes', '-o', 'json'])['items']
-pods = get_json(['kubectl', 'get', 'pods', '-A', '-o', 'json'])['items']
-
-alloc = {}
-for n in nodes:
-    name = n['metadata']['name']
-    labels = n['metadata'].get('labels', {})
-    a = n['status'].get('allocatable', {})
-    alloc[name] = {
-        'machine': labels.get('resource.compute.sensecore.cn/machine-type', ''),
-        'unsched': bool(n.get('spec', {}).get('unschedulable')),
-        'cpu': cpu_to_m(a.get('cpu')),
-        'mem': mem_to_ki(a.get('memory')),
-        'acc': qty_int(a.get(accelerator_key)),
-        'pods': 0,
-        'used_cpu': 0,
-        'used_mem': 0,
-        'used_acc': 0,
-    }
-
-for p in pods:
-    node = p.get('spec', {}).get('nodeName')
-    phase = p.get('status', {}).get('phase')
-    if not node or node not in alloc or phase in ('Succeeded', 'Failed'):
-        continue
-    alloc[node]['pods'] += 1
-    for c in p.get('spec', {}).get('containers', []):
-        req = c.get('resources', {}).get('requests', {}) or {}
-        alloc[node]['used_cpu'] += cpu_to_m(req.get('cpu'))
-        alloc[node]['used_mem'] += mem_to_ki(req.get('memory'))
-        alloc[node]['used_acc'] += qty_int(req.get(accelerator_key))
-
-rows = []
-fit = []
-reason_counts = {'accelerator': 0, 'cpu': 0, 'memory': 0, 'unsched': 0, 'nonmachine': 0}
-for name, d in alloc.items():
-    if need_machine_type and d['machine'] != need_machine_type:
-        reason_counts['nonmachine'] += 1
-        continue
-    free_cpu = d['cpu'] - d['used_cpu']
-    free_mem = d['mem'] - d['used_mem']
-    free_acc = d['acc'] - d['used_acc']
-    bad = []
-    if d['unsched']:
-        bad.append('unsched')
-        reason_counts['unsched'] += 1
-    if free_acc < need_accelerator:
-        bad.append('accelerator')
-        reason_counts['accelerator'] += 1
-    if free_cpu < need_cpu_m:
-        bad.append('cpu')
-        reason_counts['cpu'] += 1
-    if free_mem < need_mem_ki:
-        bad.append('memory')
-        reason_counts['memory'] += 1
-    row = (name, free_acc, free_cpu / 1000, free_mem / 1024**2, d['used_acc'], d['used_cpu'] / 1000, d['used_mem'] / 1024**2, d['pods'], ','.join(bad) or 'FIT')
-    rows.append(row)
-    if not bad:
-        fit.append(row)
-
-print(f'NEED: accelerator={need_accelerator} cpu={need_cpu_m/1000:g} memoryGi={need_mem_ki/1024**2:g} machine={need_machine_type or "<any>"}')
-print('candidate nodes:', len(rows), 'fit:', len(fit), 'reason_counts_overlap:', reason_counts)
-print('TOP_FREE_CANDIDATES name free_acc free_cpu free_memGi used_acc used_cpu used_memGi pods status')
-for r in sorted(rows, key=lambda x: (x[1], x[2], x[3]), reverse=True)[:30]:
-    print('%s\t%s\t%.3f\t%.1f\t%s\t%.3f\t%.1f\t%s\t%s' % r)
-print('FIT_NODES')
-for r in sorted(fit):
-    print('%s\tfree_acc=%s\tfree_cpu=%.3f\tfree_memGi=%.1f\tpods=%s' % (r[0], r[1], r[2], r[3], r[7]))
-PY
-```
-
-判断口径：
-
-* `node.status.allocatable` 作为节点可分配总量。
-* 已使用量按已调度且未完成 Pod 的 `resources.requests` 累加。
-* 只统计 `spec.nodeName` 非空且 phase 不是 `Succeeded` / `Failed` 的 Pod。
-* 目标 Pod 可调度需要同一台节点同时满足 accelerator、CPU、memory、machine-type、nodeSelector / affinity、非 unschedulable 等条件。
-* 如果 `fit: 0`，但各类资源在不同节点上分别还有剩余，通常就是资源碎片化。
+资源不足 / 资源碎片化检查已并入 `2.3 查询任务` 的标准流程。遇到 Pending / `NotEnoughResources` 时，按 `2.3.3 第三步：NotEnoughResources / 资源碎片化判断` 执行，不要单独使用过期脚本或只看 vcluster 总资源量。
 
 ---
 
