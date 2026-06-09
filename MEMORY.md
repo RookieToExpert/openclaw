@@ -398,6 +398,25 @@ MCCL 测试相关内容优先遵循最新 `TOOLS.md` 和当前有效 skill。
 * 判断 MUXI MCCL 结果时，重点查看每轮每个 benchmark 的 `# Avg bus bandwidth`、`rc=0`、`# Out of bounds values : 0 OK`，以及是否出现 error / failed / timeout / hang。
 * 不擅自计算或汇总用户要求保留原始输出的 MCCL 结果；如需摘要，应基于日志中的原始 `Avg bus bandwidth` 行。
 
+### 4.5 调度资源不足 / 碎片化判断原则
+
+排查 Volcano / PodGroup / Pod Pending 时，不要只看 vcluster 总资源量。Kubernetes 调度要求单个 Pod 的 request 必须在同一台可选节点上同时满足。
+
+判断是否资源不足或碎片化时，应按节点计算：
+
+```text
+节点剩余资源 = node.status.allocatable - 已调度且未完成 Pod 的 requests
+```
+
+统计口径：
+
+* 只统计已经有 `spec.nodeName` 的 Pod。
+* 跳过 `Succeeded` / `Failed` Pod。
+* 对每个节点累加未完成 Pod 的 CPU / memory / accelerator requests。
+* 再用节点 `status.allocatable` 扣减已分配 requests。
+
+如果 vcluster 总量看起来有资源，但没有任何单节点同时满足目标 Pod 的 CPU / memory / accelerator / nodeSelector / affinity / taint toleration，则通常是资源碎片化或调度约束导致的不可调度。
+
 ---
 
 ## 5. Skills 使用原则
