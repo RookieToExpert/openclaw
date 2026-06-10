@@ -188,11 +188,18 @@ ansible all -i '<目标IP>,' -m shell -a '<命令>'
 
 ### 3.1 vcjob / Volcano 任务查询
 
-VC 集群中的训练任务统一优先查询：
+VC 集群中的训练任务统一优先用 rayctl 查询；需要 kubectl 兜底查 `vcjob` / `PodGroup` / Pod 时，必须先切到对应 vcluster kubeconfig。
 
 ```bash
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 kubectl get vcjob -A
 ```
+
+红线：
+
+* `vcjob` / `PodGroup` 是 vcluster 内资源，禁止用 host cluster kubeconfig `/root/kubeconfig` 查询或兜底。
+* rayctl 输出的 `VC` 显示名不一定等于 `/root/D/` 下的 kubeconfig 文件名。不要把 `vc-c550-jiaofu-test` 直接拼成 `/root/D/vc-c550-jiaofu-test`。
+* 需要先在开发机上 `ls -1 /root/D` 定位实际 kubeconfig 文件名，例如 `vc-c550-jiaofu-test` 对应的文件可能是 `/root/D/c550-jiaofu`。
 
 禁止用以下命令判断 Volcano 任务：
 
@@ -213,14 +220,16 @@ kubectl get vcjobs -A
 查询 D 集群 / a2 / a3 / c550 等任务时：
 
 1. 到开发机。
-2. 设置正确 kubeconfig。
+2. 先用 host cluster kubeconfig / rayctl 做任务入口查询。
 3. 优先使用 `rayctl job get <job-name-or-pod-name-or-uid>` 查询任务；具体命令参考 `TOOLS.md` 的 “2.3 查询任务”。
 4. `rayctl job get` 已合并旧 `job check` 能力；不要再使用旧的 `rayctl job check`、`rayctl job get job`、`rayctl job get pg`。
-5. 如果需要查看 PodGroup 细节或事件，再进入对应 vcluster kubeconfig，用 `kubectl get podgroup -A | grep <vcjob-name>` 定位 PodGroup，并用 `kubectl describe podgroup <pg-name> -n <namespace>` 查询。
-6. 如果 rayctl 信息不足，再进入对应 vcluster kubeconfig，用 kubectl 查询 Pod、vcjob、PodGroup、Event 和日志。
-7. rayctl 结果足够详细时，以 rayctl 为准。
-8. 对 `NotEnoughResources` 的精确判断应并入任务查询流程：先用 rayctl / PodGroup 定性，再用 vcluster kubeconfig 下的 kubectl 逐节点匹配目标 Pod requests 与 node allocatable / 已调度 Pod requests。
-9. 不要只凭 vcluster 总资源量或概览表判断资源是否足够；调度要求同一台节点同时满足目标 Pod 的全部资源和调度约束。
+5. 如果 rayctl 输出了 `VC` 名称，需要查 `/root/D` 目录确认实际 vcluster kubeconfig 文件名；`VC` 显示名不保证等于 kubeconfig 文件名。
+6. 如果需要查看 PodGroup 细节或事件，再进入对应 vcluster kubeconfig，用 `kubectl get podgroup -A | grep <vcjob-name>` 定位 PodGroup，并用 `kubectl describe podgroup <pg-name> -n <namespace>` 查询。
+7. 如果 rayctl 信息不足，再进入对应 vcluster kubeconfig，用 kubectl 查询 Pod、vcjob、PodGroup、Event 和日志。
+8. 禁止在 vcluster kubeconfig 不存在或查不到时回退到 host cluster kubeconfig 查询 `vcjob` / `PodGroup`；这类资源必须在对应 vcluster 中查。
+9. rayctl 结果足够详细时，以 rayctl 为准。
+10. 对 `NotEnoughResources` 的精确判断应并入任务查询流程：先用 rayctl / PodGroup 定性，再用 vcluster kubeconfig 下的 kubectl 逐节点匹配目标 Pod requests 与 node allocatable / 已调度 Pod requests。
+11. 不要只凭 vcluster 总资源量或概览表判断资源是否足够；调度要求同一台节点同时满足目标 Pod 的全部资源和调度约束。
 
 ---
 

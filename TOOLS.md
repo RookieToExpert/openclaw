@@ -206,8 +206,8 @@ rayctl -k /path/to/kubeconfig <command>
 
 ```bash
 export KUBECONFIG=/root/kubeconfig
-export KUBECONFIG=/root/D/<vc-name>
-rayctl -k /root/D/<vc-name> job get <job-name-or-pod-name-or-uid>
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
+rayctl -k /root/D/<实际 kubeconfig 文件名> job get <job-name-or-pod-name-or-uid>
 ```
 
 切换 rayctl 平台环境：
@@ -257,13 +257,25 @@ vcluster kubeconfig 目录：
 /root/D/
 ```
 
+红线：rayctl 输出的 `VC` 显示名不保证等于 `/root/D/` 下的 kubeconfig 文件名。不能把 `VC=vc-c550-jiaofu-test` 直接写成 `export KUBECONFIG=/root/D/vc-c550-jiaofu-test`；必须先确认文件真实存在。
+
+定位实际 kubeconfig 文件名：
+
+```bash
+ls -1 /root/D
+ls -1 /root/D | grep -E 'c550|jiaofu|h3c|a3|llmit'
+```
+
 示例：
 
 ```bash
 export KUBECONFIG=/root/D/a3-llmit
 export KUBECONFIG=/root/D/c550-h3c
+export KUBECONFIG=/root/D/c550-jiaofu
 export KUBECONFIG=/root/D/ai4chem
 ```
+
+如果找不到对应 vcluster kubeconfig，停止并反馈“未定位到实际 vcluster kubeconfig 文件”，不要改用 host cluster kubeconfig 查询 vcluster 内资源。
 
 ---
 
@@ -278,7 +290,8 @@ export KUBECONFIG=/root/D/ai4chem
 ```bash
 export KUBECONFIG=/root/kubeconfig
 rayctl job get <job-name-or-pod-name-or-uid>
-rayctl -k /root/D/<vc-name> job get <job-name-or-pod-name-or-uid>
+# 如果需要带 vcluster kubeconfig，先按 2.2 在 /root/D 中确认实际文件名
+rayctl -k /root/D/<实际 kubeconfig 文件名> job get <job-name-or-pod-name-or-uid>
 ```
 
 注意：
@@ -293,12 +306,23 @@ rayctl -k /root/D/<vc-name> job get <job-name-or-pod-name-or-uid>
 
 rayctl 输出足够明确时，以 rayctl 为准。
 
+如果 rayctl 第一层输出 `VC`，但提示需要带 vcluster kubeconfig 重查，先定位实际 kubeconfig 文件名：
+
+```bash
+ls -1 /root/D
+ls -1 /root/D | grep -E '<vc关键字，如 c550|jiaofu|a3|llmit>'
+```
+
+注意：`VC` 显示名只是平台对象名，不保证是 kubeconfig 文件名。例如 `VC=vc-c550-jiaofu-test`，实际文件可能是 `/root/D/c550-jiaofu`。
+
 #### 2.3.2 第二步：rayctl 不够明确时查 vcluster 资源
+
+红线：`PodGroup` / `vcjob` / vcluster 内 Pod、Event、日志必须用对应 vcluster kubeconfig 查询。禁止因为 `/root/D/<VC显示名>` 不存在或查不到资源，就回退到 host cluster kubeconfig `/root/kubeconfig` 查询这些资源。
 
 如果需要进入 vcluster 再查 Pod / vcjob：
 
 ```bash
-export KUBECONFIG=/root/D/<vc-name>
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 kubectl get vcjob -A | grep <job-name>
 kubectl get pod -A | grep <job-name>
 kubectl describe pod <pod-name> -n <namespace>
@@ -307,10 +331,12 @@ kubectl describe pod <pod-name> -n <namespace>
 如果需要查看 PodGroup 细节或事件，先在 vcluster 中定位 PodGroup，再 describe：
 
 ```bash
-export KUBECONFIG=/root/D/<vc-name>
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 kubectl get podgroup -A | grep <vcjob-name>
 kubectl describe podgroup <podgroup-name> -n <namespace>
 ```
+
+如果 vcluster 中查不到 `vcjob` / `PodGroup`，只说明 kubeconfig、namespace、任务名或同步状态需要继续核对；不要用 host cluster kubeconfig 作为替代结论。
 
 #### 2.3.3 第三步：NotEnoughResources / 资源碎片化判断
 
@@ -333,7 +359,7 @@ kubectl describe podgroup <podgroup-name> -n <namespace>
 先查看目标 Pod 请求和调度约束：
 
 ```bash
-export KUBECONFIG=/root/D/<vc-name>
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 kubectl get pod <pod-name> -n <namespace> -o json | jq -r '
   "nodeName=" + (.spec.nodeName // ""),
   "schedulerName=" + (.spec.schedulerName // ""),
@@ -507,7 +533,10 @@ PYCHECK
 
 ### 2.4 查询 vcjob
 
+`vcjob` 是 vcluster 内资源，必须先切到对应 vcluster kubeconfig；禁止用 host cluster kubeconfig `/root/kubeconfig` 查询或兜底。
+
 ```bash
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 kubectl get vcjob -A
 ```
 
@@ -623,7 +652,7 @@ rayctl afs check -l <afs-name-or-uid>
 查询 PVC：
 
 ```bash
-export KUBECONFIG=/root/D/<vc-name>
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 rayctl pvc check <pvc-name>
 rayctl pvc check -l <pvc-name>
 kubectl get pvc <pvc-name> -o yaml
@@ -657,7 +686,7 @@ pvc-<afs-name>
 命令模板：
 
 ```bash
-export KUBECONFIG=/root/D/<vc-name>
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 
 rayctl pvc create \
   --name pvc-<afs-name> \
@@ -801,7 +830,7 @@ framework: PyTorch
 ### 3.3 910C 单机任务
 
 ```bash
-export KUBECONFIG=/root/D/<vc-name>
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 
 rayctl job create 910c-single \
   --name <job-name> \
@@ -828,7 +857,7 @@ command: sleep inf
 ### 3.4 910B 单机任务
 
 ```bash
-export KUBECONFIG=/root/D/<vc-name>
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 
 rayctl job create 910b-single \
   --name <job-name> \
@@ -854,7 +883,7 @@ accelerators: 8
 ### 3.5 多机任务
 
 ```bash
-export KUBECONFIG=/root/D/<vc-name>
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 
 rayctl job create <template-name> \
   --name <job-name> \
@@ -1406,7 +1435,10 @@ kubectl logs <pod-name> -n <namespace> -c <container-name>
 
 ### 8.4 查看 Volcano 任务
 
+`vcjob` 是 vcluster 内资源，必须先切到对应 vcluster kubeconfig；禁止用 host cluster kubeconfig `/root/kubeconfig` 查询或兜底。
+
 ```bash
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 kubectl get vcjob -A
 kubectl describe vcjob <job-name> -n <namespace>
 ```
@@ -1415,7 +1447,10 @@ kubectl describe vcjob <job-name> -n <namespace>
 
 ### 8.5 查看 PodGroup
 
+`PodGroup` 是 vcluster 内资源，必须先切到对应 vcluster kubeconfig；禁止用 host cluster kubeconfig `/root/kubeconfig` 查询或兜底。
+
 ```bash
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
 kubectl get podgroup -A
 kubectl describe podgroup <podgroup-name> -n <namespace>
 ```
