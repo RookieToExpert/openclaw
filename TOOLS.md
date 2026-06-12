@@ -1461,6 +1461,101 @@ kubectl describe podgroup <podgroup-name> -n <namespace>
 
 ---
 
+
+### 8.7 批量删除 Pod SOP
+
+适用场景：需要清理 vcluster 内大量历史 `Failed` / `Succeeded` Pod CR，降低 apiserver / 前后端同步压力。
+
+红线：批量删除 Pod 是写操作。必须先展示、计数、保存文件、确认文件，再等待用户确认后删除。
+
+入口：在 D 集群开发机执行，并先切到目标 vcluster 的真实 kubeconfig 文件。不要用 host cluster kubeconfig 删除 vcluster 内 Pod。
+
+```bash
+ssh -p 32222 root@10.140.158.149
+export KUBECONFIG=/root/D/<实际 kubeconfig 文件名>
+```
+
+如果用户按北京时间指定日期，先换算 UTC 窗口。例如北京时间 `2026-05-27 00:00:00` 到 `2026-05-28 00:00:00`，对应 UTC：
+
+```text
+START_UTC=2026-05-26T16:00:00Z
+END_UTC=2026-05-27T16:00:00Z
+```
+
+第一步：只读查看匹配对象。
+
+```bash
+kubectl get pod -A -o json \
+| jq -r '.items[]
+  | select(.status.phase=="Failed")
+  | select(.metadata.creationTimestamp >= "<START_UTC>" and .metadata.creationTimestamp < "<END_UTC>")
+  | [.metadata.namespace,.metadata.name,.status.phase,.metadata.creationTimestamp]
+  | @tsv'
+```
+
+第二步：只读计数。
+
+```bash
+kubectl get pod -A -o json \
+| jq -r '.items[]
+  | select(.status.phase=="Failed")
+  | select(.metadata.creationTimestamp >= "<START_UTC>" and .metadata.creationTimestamp < "<END_UTC>")
+  | [.metadata.namespace,.metadata.name]
+  | @tsv' \
+| wc -l
+```
+
+第三步：保存待删除清单。
+
+```bash
+kubectl get pod -A -o json \
+| jq -r '.items[]
+  | select(.status.phase=="Failed")
+  | select(.metadata.creationTimestamp >= "<START_UTC>" and .metadata.creationTimestamp < "<END_UTC>")
+  | [.metadata.namespace,.metadata.name]
+  | @tsv' > /tmp/failed-pods-<YYYYMMDD>.tsv
+```
+
+第四步：确认文件内容和数量。
+
+```bash
+head /tmp/failed-pods-<YYYYMMDD>.tsv
+wc -l /tmp/failed-pods-<YYYYMMDD>.tsv
+```
+
+第五步：停下来给用户展示删除命令，并等待明确确认。
+
+推荐默认串行删除：
+
+```bash
+while IFS=$'\t' read -r ns pod; do
+  kubectl delete pod "$pod" -n "$ns" --ignore-not-found
+done < /tmp/failed-pods-<YYYYMMDD>.tsv
+```
+
+如果用户明确要求并发删除，使用 `--wait=false` 减少阻塞，但必须已确认影响范围：
+
+```bash
+cat /tmp/failed-pods-<YYYYMMDD>.tsv \
+| xargs -r -P 50 -n 2 sh -c 'kubectl delete pod "$2" -n "$1" --ignore-not-found --wait=false' _
+```
+
+第六步：删除后用同一筛选条件复查。
+
+```bash
+kubectl get pod -A -o json \
+| jq -r '.items[]
+  | select(.status.phase=="Failed")
+  | select(.metadata.creationTimestamp >= "<START_UTC>" and .metadata.creationTimestamp < "<END_UTC>")
+  | [.metadata.namespace,.metadata.name]
+  | @tsv' \
+| wc -l
+```
+
+复查结果为 `0` 才能说明该条件下的 Pod 已清完。
+
+---
+
 ## 9. Skills 说明
 
 当前 D 集群日常操作不依赖旧的 `d-cluster` skill。

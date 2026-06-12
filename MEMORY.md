@@ -520,6 +520,24 @@ yes
 
 ---
 
+
+### 6.1.1 批量删除 Kubernetes Pod 的确认规则
+
+批量删除 Pod 是高风险 Kubernetes 写操作，必须严格分阶段执行：
+
+1. 先切到正确的 vcluster kubeconfig，禁止误用 host cluster kubeconfig。
+2. 先只读展示筛选结果，输出 namespace、pod name、phase、creationTimestamp 等关键字段。
+3. 再只读统计数量。
+4. 将待删除对象保存到远端临时文件，例如 `/tmp/failed-pods-YYYYMMDD.tsv`。
+5. 用 `head` 和 `wc -l` 确认文件内容与数量。
+6. 停下来向用户展示删除命令，等待明确确认。
+7. 用户确认后才能执行删除。
+8. 删除后必须用同一筛选条件复查剩余数量。
+
+时间筛选要明确时区：如果用户说“北京时间某天”，需要转换为 UTC 时间窗口后再写入 `creationTimestamp` 条件。
+
+默认优先使用串行删除，降低冲击面；只有用户明确要求或数量很大且风险可控时，才使用并发 `xargs -P` 删除。
+
 ### 6.2 OpenClaw 配置修改红线
 
 禁止未经确认修改以下内容：
